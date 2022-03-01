@@ -1,0 +1,214 @@
+---
+title: "Predicting Success of a Movie - Data Cleaning"
+author: "Madhusudan"
+date: "11/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Import Required Libraries
+
+library("tidyverse")
+library("priceR")
+```
+
+```{r}
+# Import Required Data sets
+
+movies_df <- as_tibble(read_csv("Raw Inputs/movies_metadata.csv"))
+IMDB_movies <- as_tibble(read_csv("Raw Inputs/IMDb movies.csv"))
+IMDB_rating <- as_tibble(read_csv("Raw Inputs/IMDb ratings.csv"))
+lang_codes <- as_tibble(read_csv("Raw Inputs/language_codes.csv"))
+```
+
+```{r}
+head(movies_df,5)
+head(IMDB_movies,5)
+head(IMDB_rating,5)
+head(lang_codes,5)
+```
+
+```{r}
+# List of columns to keep and drop
+
+to_keep_columns <- c("adult","genres", "imdb_id","popularity","runtime","vote_count","production_countries","original_language","title")
+drop_columns <- c("belongs_to_collection","homepage","id","budget","poster_path","video","tagline","production_companies","overview",
+                  "release_date","revenue","status","original_title","vote_average")
+```
+
+```{r}
+# Helper Function to convert columns containing Dictionaries to List:
+
+getAttribute <- function(vector) {
+    vector <- as.vector(str_split(vector, regex("[\\[{'':,}\\]]"))[[1]])
+    vector <- vector[!vector == "" & !vector == " " ]
+    vector <- as.vector(vector[which(vector =="name")+1])
+    return(toString(vector))
+}
+```
+
+```{r}
+# Helper Function to convert any currency into USD as per today's current exchange rate
+
+convert_currency <- function(currency)
+{  
+  #retrieves a list of currencies seen in currency
+  curr_type = unique(str_sub(currency,1,4))
+  
+  for (curr in curr_type){
+    #Fetches the currency Value using priceR package
+    exch_rate = exchange_rate_latest(curr)
+    conversion_value = as.double(exch_rate[exch_rate[1] == "USD"])[2]
+    # Retrieves values in data with current currency
+    sub_currency = currency[str_sub(currency,1,4)==curr]
+    for (data in sub_currency)
+    {
+      ind = which(currency == data)
+      value = as.double(str_sub(data,5))
+      res = as.integer(value * conversion_value)
+      currency[ind] = res
+    }
+  }
+  return(currency)
+}
+```
+
+```{r}
+# Helper Function to create a 1/0 column for each value in a comma separated text column 
+
+create_cols <- function(x,colname,df){
+    
+    ncols <- max(stringr::str_count(x,", ")) + 1
+    colm <- paste(colname,1:ncols,sep="_")
+    
+    df <- tidyr::separate(data = df, col = colname, sep = ", ", into = colm, remove = FALSE)
+    unique_val_list <- as.data.frame(matrix(ncol = 1, nrow = 0))
+
+    for(i in colm)
+    { 
+      colnames(unique_val_list) <- i
+      tmp <- as.data.frame(df[,i])
+      colnames(tmp) <- i
+      unique_val_list <- rbind(unique_val_list,tmp)
+    }
+
+    unique_val_list <- as.data.frame(unique(unique_val_list))
+    unique_val_list <- na.omit(unique_val_list)
+    
+    for(i in 1:length(unique_val_list[,1]))
+    {
+        df[unique_val_list[i,1]] <- 0
+    }
+
+    for(i in 1:nrow(df))
+    {
+      for(j in colm)
+      { 
+        if(!is.na(df[i,j]))
+        {
+            k <- as.character(df[i,j])
+            df[i,k] = 1
+        } 
+      }
+    }
+    
+    df <- select(df, -colm)
+    return (df) 
+}
+```
+
+```{r}
+# Drop irrelevant columns
+
+movies_df <- movies_df[to_keep_columns]
+movies_df
+```
+
+```{r}
+# Convert key:value formats into comma separated values
+
+movies_df$genres <- sapply(movies_df$genres,getAttribute, USE.NAMES = FALSE, simplify = "array")
+movies_df$production_countries <- sapply(movies_df$production_countries,getAttribute, USE.NAMES = FALSE, simplify = "array")
+movies_df
+```
+
+```{r}
+#Replace blank values with NA
+
+movies_df <- movies_df %>%
+  mutate(genres = ifelse(genres == '', NA, genres)) %>%
+  mutate(production_countries = ifelse(production_countries == '', NA, production_countries))
+```
+
+```{r}
+# Join the main movies file and IMDB movies.
+
+movies_df <- dplyr::inner_join(movies_df,
+                             select(IMDB_movies,year,imdb_title_id,director,budget,worlwide_gross_income),
+                             by = c("imdb_id" = "imdb_title_id"))
+movies_df <- dplyr::inner_join(movies_df,
+                             select(IMDB_rating,imdb_title_id,weighted_average_vote),
+                             by = c("imdb_id" = "imdb_title_id"))
+movies_df <- na.omit(movies_df)
+movies_df
+```
+
+```{r}
+# Convert all currencies to USD
+
+# Currency Conversion
+movies_df$budget[!str_detect(movies_df$budget, "^\\$")] = convert_currency(movies_df$budget[!str_detect(movies_df$budget, "^\\$")])
+movies_df$worlwide_gross_income[!str_detect(movies_df$worlwide_gross_income, "^\\$")] = convert_currency(movies_df$worlwide_gross_income[!str_detect(movies_df$worlwide_gross_income, "^\\$")])
+
+movies_df = na.omit(movies_df)
+
+# Dollar Sign removal
+movies_df$budget[str_detect(movies_df$budget, "^\\$")]= as.numeric(str_sub(movies_df$budget[str_detect(movies_df$budget, "^\\$")],3))
+movies_df$worlwide_gross_income[str_detect(movies_df$worlwide_gross_income, "^\\$")]= as.numeric(str_sub(movies_df$worlwide_gross_income[str_detect(movies_df$worlwide_gross_income, "^\\$")],3))
+
+movies_df$budget = as.numeric(movies_df$budget)
+movies_df$worlwide_gross_income = as.numeric(movies_df$worlwide_gross_income)
+
+movies_df <- na.omit(movies_df)
+
+movies_df
+```
+
+```{r}
+# Create the Y-Variable, that is, is a movie hit or not-hit
+
+movies_df = movies_df %>% 
+  mutate("hit" = ifelse(worlwide_gross_income/budget > 1.0, 1, 0))
+```
+
+```{r}
+# Create column for each production country and genre and create a sparse data base of 1 and 0
+
+movies_df <- as.data.frame(create_cols(movies_df$production_countries, "production_countries",movies_df))
+movies_df <- as.data.frame(create_cols(movies_df$genres, "genres",movies_df))
+colnames(movies_df)
+```
+
+```{r}
+# Convert coded form of languages to full name of the language
+
+movies_df <- dplyr::left_join(movies_df,lang_codes,
+                             by = c("original_language" = "alpha2"),
+                            keep = FALSE)
+```
+
+```{r}
+# Create the final output, to be used for visualization and modelling
+
+movies_df <- relocate(movies_df, hit, .after = last_col())
+
+write.csv(movies_df,"cleaned_movies_database.csv", row.names = FALSE)
+```
+
+
+
+
